@@ -1,0 +1,7 @@
+# Temporary files/directories
+*.tmp
+temp/
+tmp/
+
+# Project-specific files
+dev_tools_probing/

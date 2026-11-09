@@ -117,16 +117,10 @@
         var _chrome$runtime;
         window.__tvdInjectLoaded = true;
         const logger = {
-          info: (message, fileName = null) => {
-            // console.log(
-            //   `[Tel Download] ${fileName ? `${fileName}: ` : ""}${message}`
-            // );
-          },
-          error: (message, fileName = null) => {
-            // console.error(
-            //   `[Tel Download] ${fileName ? `${fileName}: ` : ""}${message}`
-            // );
-          },
+          // Suppress routine progress/success messages.
+          info: () => {},
+          warn: (message, details) => console.warn("[Telegram Downloader]", message, details ?? ""),
+          error: (message, details) => console.error("[Telegram Downloader]", message, details ?? ""),
         };
         const contentRangeRegex = /^bytes (\d+)-(\d+)\/(\d+)$/;
         const REFRESH_DELAY = 500;
@@ -140,44 +134,63 @@
         if (isPageWorld) {
           document.documentElement.setAttribute("data-tvd-page-inject", "1");
         }
+        // Per-media active download locks. A key is held until its request terminates.
+        const activeDownloads = new Map();
+        function getDownloadKey(media = {}) {
+          const peerId = String(media.pid ?? "").trim();
+          const messageId = String(media.mid ?? "").trim();
+          // An index or document ID is not a Telegram message ID. Only explicitly
+          // supplied numeric peer/message IDs participate in this identity key.
+          if (/^-?\d+$/.test(peerId) && /^\d+$/.test(messageId) && messageId !== "0") {
+            return `id:${peerId}:${messageId}`;
+          }
+          const url = String(media.media_url || media.resolved_url || "");
+          if (url) return `url:${url}`;
+          if (media.fallback_selector) {
+            return `selector:${peerId}:${media.fallback_selector}:${media.type || ""}`;
+          }
+          return "";
+        }
         function claimDownload(media = {}) {
-          const key = String(
-            media.download_id || media.mid || media.video_id || media.video_url || "",
-          ).slice(0, 180);
-          if (!key) return true;
-          const attr = "data-tvd-dl-lock";
-          const current = document.documentElement.getAttribute(attr) || "";
-          const parts = current.split("||").filter(Boolean);
-          if (parts.includes(key)) return false;
-          parts.push(key);
-          document.documentElement.setAttribute(attr, parts.join("||"));
-          window.setTimeout(() => {
-            const next = (document.documentElement.getAttribute(attr) || "")
-              .split("||")
-              .filter((item) => item && item !== key);
-            if (next.length) document.documentElement.setAttribute(attr, next.join("||"));
-            else document.documentElement.removeAttribute(attr);
-          }, 120000);
-          return true;
+          const key = getDownloadKey(media);
+          // An unidentifiable file should not block unrelated downloads.
+          if (!key) return { key: "", owner: null };
+          if (activeDownloads.has(key)) {
+            logger.warn("Download already active for this media item.", {
+              type: media.type || "unknown",
+              requestId: media.request_id || "",
+            });
+            return null;
+          }
+          const owner = Symbol("active-download");
+          activeDownloads.set(key, owner);
+          return { key, owner };
+        }
+        function releaseDownload(claim) {
+          if (claim?.key && activeDownloads.get(claim.key) === claim.owner) {
+            activeDownloads.delete(claim.key);
+          }
         }
 
-        // Listen to custom events
-        document.addEventListener("video_download", function (e) {
-          var _e$detail;
-          const src =
-            ((_e$detail = e.detail) === null || _e$detail === void 0
-              ? void 0
-              : _e$detail.video_src) || {};
+        // Receive download requests from the content script.
+        document.addEventListener("tvd_media_download", function (event) {
+          const details = event.detail || {};
+          const payload = details.media || {};
           const pageReady = document.documentElement.getAttribute("data-tvd-page-inject") === "1";
           if (!isPageWorld && pageReady) return;
-          if (!claimDownload(src)) return;
-          if (e.detail.type == "single") {
-            resolveAndDownload(e.detail.video_src);
-          } else if (e.detail.type == "batch") {
-            let video_list = e.detail.video_src || [];
-            for (let i = 0; i < video_list.length; i++) {
-              resolveAndDownload(video_list[i]);
+          const startDownload = (media) => {
+            const claim = claimDownload(media);
+            if (!claim) {
+              // Acknowledge rejected requests so callers do not wait until timeout.
+              emitDownloadDone(media, false);
+              return;
             }
+            void resolveAndDownload(media, claim);
+          };
+          if (details.type === "single") {
+            startDownload(payload);
+          } else if (details.type === "batch") {
+            for (const media of Array.isArray(payload) ? payload : []) startDownload(media);
           }
         });
         function isResolvedTelegramUrl(url = "") {
@@ -303,9 +316,8 @@
             new CustomEvent("tvd_download_done", {
               detail: {
                 ok: !!ok,
-                download_id: media.download_id || "",
-                video_id: media.video_id || "",
-                mid: media.mid || media.download_id || media.video_id || "",
+                request_id: media.request_id || "",
+                mid: media.mid || "",
               },
             }),
           );
@@ -314,7 +326,7 @@
           try {
             var _window$rootScope, _message$media, _message$media2;
             const pid = media.pid || getCurrentPeerId();
-            const mid = media.mid || media.video_id || media.download_id || media.id;
+            const mid = media.mid;
             if (
               !pid ||
               !mid ||
@@ -403,16 +415,11 @@
           }
           return null;
         }
-        async function resolveAndDownload(src) {
-          const media =
-            typeof src === "string"
-              ? {
-                  video_url: src,
-                }
-              : src || {};
-          let url = media.video_url || media.resolved_url || "";
+        async function resolveAndDownload(media, claim) {
+          let url = "";
           let ok = false;
           try {
+            url = media.media_url || media.resolved_url || "";
             if (!isResolvedTelegramUrl(url)) {
               const kUrl = await resolveKStreamUrl(media);
               if (kUrl !== null && kUrl !== void 0 && kUrl.url) url = kUrl.url;
@@ -421,21 +428,34 @@
               const viewer = await resolveViewerDomUrl(media);
               if (viewer !== null && viewer !== void 0 && viewer.url) url = viewer.url;
             }
-            if (!url) return;
-            await handleFetchDownload(url, media.video_id, media.download_id);
+            if (!url) {
+              logger.error("Cannot resolve a media URL.", {
+                type: media.type || "unknown",
+                requestId: media.request_id || "",
+              });
+              return;
+            }
+            await handleFetchDownload(url, media.progress_id || media.request_id, media.download_id);
             ok = true;
           } catch (e) {
-            ok = false;
+            logger.error("Media download failed.", {
+              type: media.type || "unknown",
+              requestId: media.request_id || "",
+              error: e,
+            });
           } finally {
+            // The entire fetch/retry/fallback operation has returned or failed.
+            releaseDownload(claim);
             emitDownloadDone(media, ok);
           }
         }
-        const tel_download_video = (url, id = "", download_id) => {
+        const downloadMediaSequentially = (url, requestId = "", downloadId) => {
           return new Promise((resolve, reject) => {
             let _blobs = [];
             let _next_offset = 0;
             let _total_size = null;
             let _file_extension = "mp4";
+            let mimeType = "application/octet-stream";
             let settled = false;
             let fileName =
               (Math.random() + 1).toString(36).substring(2, 10) + "." + _file_extension;
@@ -471,7 +491,8 @@
                   if (![200, 206].includes(res.status)) {
                     throw new Error("Non 200/206 response was received: " + res.status);
                   }
-                  _file_extension = normalizeFileExtension(res.headers.get("Content-Type"));
+                  mimeType = res.headers.get("Content-Type") || "application/octet-stream";
+                  _file_extension = normalizeFileExtension(mimeType);
                   fileName = fileName.substring(0, fileName.indexOf(".") + 1) + _file_extension;
                   const range = res.headers.get("Content-Range");
                   const match =
@@ -505,16 +526,16 @@
                     fileName,
                   );
                   // Define an event to transmit the download progress of the file：
-                  if (id != "") {
-                    let video_download_progress = new CustomEvent(id + "_video_download_progress", {
+                  if (requestId) {
+                    const mediaDownloadProgress = new CustomEvent(requestId + "_media_download_progress", {
                       detail: {
-                        video_id: id,
+                        request_id: requestId,
                         progress: ((_next_offset * 100) / _total_size).toFixed(0),
-                        download_id: download_id,
+                        download_id: downloadId,
                       },
                     });
                     // trigger event
-                    document.dispatchEvent(video_download_progress);
+                    document.dispatchEvent(mediaDownloadProgress);
                   }
                   return res.blob();
                 })
@@ -544,7 +565,7 @@
               logger.info("Finish downloading blobs", fileName);
               logger.info("Concatenating blobs and downloading...", fileName);
               const blob = new Blob(_blobs, {
-                type: "video/mp4",
+                type: mimeType,
               });
               const blobUrl = window.URL.createObjectURL(blob);
               logger.info("Final blob size: " + blob.size + " bytes", fileName);
@@ -556,7 +577,7 @@
               document.body.removeChild(a);
               window.URL.revokeObjectURL(blobUrl);
               logger.info("Download triggered", fileName);
-              updateProgress("100.00", id, download_id);
+              updateProgress("100.00", requestId, downloadId);
               finish(true);
             };
             fetchNextPart();
@@ -581,14 +602,14 @@
             segmentSize: o,
           };
         }
-        async function handleFetchDownload(url, id, download_id) {
+        async function handleFetchDownload(url, requestId, downloadId) {
           let params = {
             autoRetry: !0,
             progress: () => {},
             check: void 0,
           };
           if (url.startsWith("blob:")) {
-            return tel_download_video(url, id, download_id);
+            return downloadMediaSequentially(url, requestId, downloadId);
           }
           let { autoRetry: a, progress: l, check: s } = params;
           try {
@@ -610,64 +631,72 @@
                     fetch(url, {
                       headers: o,
                     }).then((res) => {
-                      if (408 === res.status) {
-                        throw Error("fetch Error", {
-                          cause: {
-                            range: `bytes=${t}-${a}`,
-                            index: r,
-                            response: res,
-                          },
-                        });
+                      if (res.status !== 206) {
+                        throw new Error(`HTTP ${res.status} for media byte range ${t}-${a}`);
                       }
                       let prog = ((a / d) * 100).toFixed(2);
                       logger.info(`Progress: ${prog}%`);
-                      return (updateProgress(prog, id, download_id), res.arrayBuffer());
+                      return (updateProgress(prog, requestId, downloadId), res.arrayBuffer());
                     });
                 }),
               name = getFileNameFromUrl(url, f),
-              h = await getResult(progress, 20, "11"),
+              h = await getResult(progress, 20, 3),
               m = new Blob(h, {
                 type: f || "application/octet-stream",
               });
             // return i(!1), URL.createObjectURL(m);
             let downloadUrl = URL.createObjectURL(m);
-            updateProgress("100.00", id, download_id);
+            updateProgress("100.00", requestId, downloadId);
             return save(downloadUrl, name);
           } catch (e) {
+            logger.warn("Parallel media download failed; trying sequential fallback.", { error: e });
             try {
-              await tel_download_video(url, id, download_id);
+              await downloadMediaSequentially(url, requestId, downloadId);
               return;
             } catch (retryError) {
               if (url && !String(url).startsWith("blob:")) {
+                logger.warn("Both fetch methods failed; handing URL to browser (result unverified).", {
+                  error: retryError,
+                });
                 save(url, getFileNameFromUrl(url, "application/octet-stream"));
-                updateProgress("100.00", id, download_id);
+                updateProgress("100.00", requestId, downloadId);
                 return;
               }
               throw retryError || e;
             }
-          } finally {
-            // t(!1);
-            console.log("finally");
           }
         }
-        async function getResult(e, t, n) {
-          let r = [],
-            a = 0;
-          for (; a < e.length; ) {
-            let o = e.slice(a, a + t).map((e) => e());
-            try {
-              let e = await Promise.all(o);
-              (r.push(...e), (a += t));
-            } catch (e) {
-              if (e instanceof Error) {
-                if (n && "fetch Error" === e.message) {
-                  let { index: t } = e.cause;
-                  ((a = t), setRefresh(1e3));
+        async function getResult(tasks, batchSize = 20, maxRetries = 3) {
+          const results = [];
+          for (let start = 0; start < tasks.length; start += batchSize) {
+            const batch = tasks.slice(start, start + batchSize);
+            for (let attempt = 0; ; attempt++) {
+              try {
+                const parts = await Promise.all(batch.map((task) => task()));
+                results.push(...parts);
+                break;
+              } catch (error) {
+                if (attempt >= maxRetries) {
+                  logger.error("Media segment batch exhausted retries.", {
+                    batchStart: start,
+                    attempts: attempt + 1,
+                    error,
+                  });
+                  throw error;
                 }
-              } else throw e;
+                const delayMs = Math.min(500 * 2 ** attempt, 4000);
+                logger.warn("Media segment batch failed; retrying.", {
+                  batchStart: start,
+                  attempt: attempt + 1,
+                  maxAttempts: maxRetries + 1,
+                  delayMs,
+                  error,
+                });
+                await setRefresh(delayMs);
+              }
             }
           }
-          return r;
+          return results;
         }
         async function setRefresh(e) {
           return new Promise((t, n) => {
@@ -726,19 +755,19 @@
           }
           return fileName;
         }
-        function updateProgress(p, id, d_id) {
+        function updateProgress(p, requestId, downloadId) {
           // Define an event to transmit the download progress of the file：
-          logger.info(`updateProgress: ${p},${id},${d_id},`);
-          if (id != "") {
-            let video_download_progress = new CustomEvent(id + "_video_download_progress", {
+          logger.info(`updateProgress: ${p},${requestId},${downloadId},`);
+          if (requestId) {
+            const mediaDownloadProgress = new CustomEvent(requestId + "_media_download_progress", {
               detail: {
-                video_id: id,
+                request_id: requestId,
                 progress: p,
-                download_id: d_id,
+                download_id: downloadId,
               },
             });
             // trigger event
-            document.dispatchEvent(video_download_progress);
+            document.dispatchEvent(mediaDownloadProgress);
           }
         }
       }

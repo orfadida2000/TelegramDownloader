@@ -11679,35 +11679,12 @@ PERFORMANCE OF THIS SOFTWARE.
         /**
          * Trigger custom download event
          * @param {*} eventType event type: single or batch
-         * @param {*} downloadUrl video or picture URL
-         * @param {*} bin_index download ID
-         * @param {*} downType Download type: image || video
+         * @param {*} downloadUrl media URL
+         * @param {*} itemIndex UI/download index (not a Telegram message ID)
+         * @param {*} mediaType Download type: image || video || music
          * @param {*} container parent element
          */
         let maxProgress = -Infinity;
-        function extractStreamIdPath(url = "") {
-          if (!String(url).includes("stream/")) return "";
-          try {
-            var _payload$location;
-            const payload = JSON.parse(
-              decodeURIComponent(
-                String(url)
-                  .substring(String(url).indexOf("stream/") + 7)
-                  .split("?")[0],
-              ),
-            );
-            return String(
-              (payload === null ||
-              payload === void 0 ||
-              (_payload$location = payload.location) === null ||
-              _payload$location === void 0
-                ? void 0
-                : _payload$location.id) || "",
-            );
-          } catch (e) {
-            return "";
-          }
-        }
         function getBubbleMediaId(element) {
           var _element$getAttribute,
             _element$closest,
@@ -11756,9 +11733,21 @@ PERFORMANCE OF THIS SOFTWARE.
             ""
           );
         }
+        // Telegram Web K places both IDs on each .album-item, and on the
+        // parent .bubble for standalone messages. The bubble of an album uses
+        // its first item's mid, so do not use it for other album items.
+        function getChatMediaIdentity(element) {
+          const item = element?.closest?.(".album-item");
+          const bubble = element?.closest?.(".bubble");
+          const source = item || bubble;
+          return {
+            mid: source?.getAttribute("data-mid") || "",
+            pid: source?.getAttribute("data-peer-id") || bubble?.getAttribute("data-peer-id") || "",
+          };
+        }
         const attachDownloadProgressListener = (container, progressId) => {
           if (!container || !progressId) return () => {};
-          const eventName = progressId + "_video_download_progress";
+          const eventName = progressId + "_media_download_progress";
           const onProgress = (value) => {
             var _value$detail;
             const downBtnProgress = container.querySelector(".down_btn_progress");
@@ -11809,48 +11798,21 @@ PERFORMANCE OF THIS SOFTWARE.
           );
           if (!wanted.size) return Promise.resolve(false);
           return new Promise((resolve) => {
-            const matches = (detail = {}) => {
-              return [detail.download_id, detail.video_id, detail.mid].some((id) =>
-                wanted.has(String(id || "")),
-              );
-            };
             const onDone = (event) => {
-              var _event$detail;
-              if (!matches(event.detail || {})) return;
+              if (!wanted.has(String(event.detail?.request_id || ""))) return;
               cleanup();
-              resolve(
-                Boolean(
-                  (_event$detail = event.detail) === null || _event$detail === void 0
-                    ? void 0
-                    : _event$detail.ok,
-                ),
-              );
-            };
-            const onProgress = (event) => {
-              var _event$detail2;
-              if (!matches(event.detail || {})) return;
-              const progress = String(
-                ((_event$detail2 = event.detail) === null || _event$detail2 === void 0
-                  ? void 0
-                  : _event$detail2.progress) || "",
-              );
-              if (progress === "100" || progress === "100.00") {
-                cleanup();
-                resolve(true);
-              }
+              resolve(Boolean(event.detail?.ok));
             };
             const cleanup = () => {
               window.clearTimeout(timer);
               document.removeEventListener("tvd_download_done", onDone);
-              wanted.forEach((id) => {
-                document.removeEventListener(id + "_video_download_progress", onProgress);
-              });
             };
             document.addEventListener("tvd_download_done", onDone);
-            wanted.forEach((id) => {
-              document.addEventListener(id + "_video_download_progress", onProgress);
-            });
             const timer = window.setTimeout(() => {
+              console.warn("[Telegram Downloader] Download completion timed out.", {
+                requestIds: [...wanted],
+                timeoutMs: timeout,
+              });
               cleanup();
               resolve(false);
             }, timeout);
@@ -11859,16 +11821,16 @@ PERFORMANCE OF THIS SOFTWARE.
         const triggerEvent = async (
           eventType,
           downloadUrl,
-          bin_index,
-          downType,
+          itemIndex,
+          mediaType,
           container,
           mediaMeta = {},
         ) => {
           const url = String(downloadUrl || "");
           const pending = Boolean(mediaMeta.source_pending);
           const isImageUrl =
-            (downType === "image" || downType === "img") && url && !url.startsWith("data:");
-          const isMusic = downType === "music";
+            (mediaType === "image" || mediaType === "img") && url && !url.startsWith("data:");
+          const isMusic = mediaType === "music";
           const isMusicPending = isMusic && (pending || Boolean(mediaMeta.mid));
           if (
             url.includes("stream/") ||
@@ -11887,32 +11849,31 @@ PERFORMANCE OF THIS SOFTWARE.
               return;
             }
             lastClickTime = currentTime;
-            let idPath = extractStreamIdPath(url);
-            const progressId = String(idPath || bin_index || "");
+            // Correlation IDs must be unique even when two albums both use index 1.
+            const requestId = crypto.randomUUID();
+            const progressId = requestId;
             const detachProgress = attachDownloadProgressListener(container, progressId);
             const eventDetails = {
               type: eventType,
-              video_src: {
-                video_url: downloadUrl,
-                video_id: idPath || bin_index,
-                download_id: bin_index,
-                mid: mediaMeta.mid || bin_index,
+              media: {
+                media_url: downloadUrl,
+                download_id: itemIndex,
+                request_id: requestId,
+                progress_id: requestId,
+                mid: mediaMeta.mid || "",
                 pid: mediaMeta.pid || "",
-                type: downType,
+                type: mediaType,
                 source_pending: pending,
                 fallback_selector: mediaMeta.fallback_selector || "",
               },
             };
-            const videoDownloadEvent = new CustomEvent("video_download", {
+            const mediaDownloadEvent = new CustomEvent("tvd_media_download", {
               detail: eventDetails,
             });
             const waitDone = mediaMeta.waitForComplete
-              ? waitForDownloadDone(
-                  [bin_index, idPath, mediaMeta.mid, mediaMeta.download_id],
-                  mediaMeta.downloadTimeout || 180000,
-                )
+              ? waitForDownloadDone([requestId], mediaMeta.downloadTimeout || 180000)
               : Promise.resolve(true);
-            document.dispatchEvent(videoDownloadEvent);
+            document.dispatchEvent(mediaDownloadEvent);
             try {
               await waitDone;
             } finally {
@@ -12157,7 +12118,8 @@ PERFORMANCE OF THIS SOFTWARE.
               if (type == "music") {
                 const downloadBtn = container.querySelector(`.down_btn_music`);
                 const audio_play = container.getElementsByClassName("audio-play-icon");
-                const downloadId = getBubbleMediaId(container) || String(conIndx + 1);
+                const identity = getChatMediaIdentity(container);
+                const downloadId = identity.mid || String(conIndx + 1);
                 try {
                   if (!audio_play.length) {
                     return;
@@ -12175,8 +12137,7 @@ PERFORMANCE OF THIS SOFTWARE.
                     );
                   }
                   await triggerEvent("single", audioSrc || "", downloadId, type, container, {
-                    mid: getBubbleMediaId(container) || downloadId,
-                    pid: getPeerId(),
+                    ...identity,
                     source_pending: !audioSrc,
                     waitForComplete: true,
                     downloadTimeout: 120000,
@@ -12198,6 +12159,7 @@ PERFORMANCE OF THIS SOFTWARE.
                 }
               } else {
                 await triggerEvent("single", element.src, conIndx + 1, type, container, {
+                  ...getChatMediaIdentity(container),
                   waitForComplete: true,
                   downloadTimeout: type === "img" ? 60000 : 180000,
                 });
@@ -12208,17 +12170,19 @@ PERFORMANCE OF THIS SOFTWARE.
         const handleAlbumItem = (checkbox, index, container) => {
           return new Promise((resolve) => {
             setTimeout(async () => {
-              checkbox.parentNode.querySelector(".album-item-media").click();
-              await mediaDownload(index + 1, container);
+              const albumItem = checkbox.closest(".album-item");
+              albumItem?.querySelector(".album-item-media")?.click();
+              await mediaDownload(index + 1, container, albumItem);
               resolve();
             }, 1000);
           });
         };
-        async function mediaDownload(id, element) {
+        async function mediaDownload(id, element, mediaItem = null) {
           let viewerMedia = await waitForKViewerSource("tgMedia", "video", 10000);
           let url = viewerMedia.url;
           if (url) {
             await triggerEvent("single", url, id, "video", element, {
+              ...getChatMediaIdentity(mediaItem || element),
               waitForComplete: true,
               downloadTimeout: 180000,
             });
@@ -12363,6 +12327,7 @@ PERFORMANCE OF THIS SOFTWARE.
                         const imageUrl = imageNode ? getMediaNodeSrc(imageNode) : "";
                         if (!imageUrl) return;
                         await triggerEvent("single", imageUrl, index + 1, "image", container, {
+                          ...getChatMediaIdentity(checkbox.closest(".album-item")),
                           waitForComplete: true,
                           downloadTimeout: 60000,
                         });
@@ -12868,7 +12833,7 @@ PERFORMANCE OF THIS SOFTWARE.
           }
           return rawId;
         }
-        function getVideoHost(element) {
+        function getMediaHost(element) {
           var _element$closest7;
           return (
             (element === null ||
@@ -12890,7 +12855,7 @@ PERFORMANCE OF THIS SOFTWARE.
             _host$classList2,
             _host$classList3,
             _host$querySelector;
-          const host = getVideoHost(element);
+          const host = getMediaHost(element);
           return Boolean(
             (element === null ||
             element === void 0 ||
@@ -13200,7 +13165,11 @@ PERFORMANCE OF THIS SOFTWARE.
           element.setAttribute("id", domId);
           return {
             mid,
-            pid: getPeerId(),
+            pid:
+              element.getAttribute("data-peer-id") ||
+              element.closest("[data-mid][data-peer-id]")?.getAttribute("data-peer-id") ||
+              element.querySelector("[data-mid][data-peer-id]")?.getAttribute("data-peer-id") ||
+              getPeerId(),
             type,
             download_id,
             fallback_selector: '[data-tgvd-download-id="' + domId + '"]',
