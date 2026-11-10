@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Telegram Local Downloader",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Local Telegram media downloader",
   "icons": {
     "128": "assets/image/logo.png"
@@ -13,15 +13,36 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://web.telegram.org/*"],
-      "js": ["js/telegram-contentScript.js"],
-      "run_at": "document_end"
+      "matches": [
+        "https://web.telegram.org/k/*"
+      ],
+      "js": [
+        "js/content/core.js",
+        "js/content/locales.js",
+        "js/content/utils.js",
+        "js/content/ui.js",
+        "js/content/downloads.js",
+        "js/content/viewer.js",
+        "js/content/albums.js",
+        "js/content/chat.js",
+        "js/content/sidebar.js",
+        "js/content/main.js"
+      ],
+      "run_at": "document_end",
+      "css": [
+        "css/telegram-downloader.css"
+      ]
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["js/telegram-contextScript.js", "assets/image/logo.png"],
-      "matches": ["https://web.telegram.org/*"]
+      "resources": [
+        "js/telegram-contextScript.js",
+        "assets/image/logo.png"
+      ],
+      "matches": [
+        "https://web.telegram.org/*"
+      ]
     }
   ]
 }

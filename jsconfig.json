@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "strict": true,
+    "noEmit": true,
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
+  },
+  "include": ["js/content/**/*.js", "js/telegram-contextScript.js", "types/**/*.d.ts"],
+  "exclude": ["tests", "node_modules"]
+}

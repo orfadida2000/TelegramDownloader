@@ -1,0 +1,45 @@
+/* Extracted from the supplied extension. Rules are kept scoped where possible. */
+.content-teleram-script *, .progress-teleram-script *, .download-click-div * { padding: 0; margin: 0; list-style: none; }
+.content-teleram-script{width:100%;display:flex;flex-direction:row;justify-content:center;margin:10px 0}
+.content-teleram-script .downloadBtnIns{display:flex;justify-content:center;align-items:center;padding-top:16px;text-align:center;padding:10px 10px;border-radius:10px;background-color:#bd93f9}
+.content-teleram-script .downloadBtnIns .download-checkbox-all,.content-teleram-script .downloadBtnIns .download-images,.content-teleram-script .downloadBtnIns .download-videos{color:#333}
+.content-teleram-script .downloadBtnIns .jump-downloader{padding:5px 10px}
+.progress-teleram-script{width:100%;display:flex;flex-direction:row;justify-content:center;padding-bottom:8px}
+.progress-teleram-script .down_btn_progress{width:50%;height:30px;text-align:center;background-color:#bd93f9;color:#333;border-radius:5px;margin:2px auto}
+.download-check-item{width:23px;height:23px;position:absolute;right:0;bottom:0;display:inline-block;margin:2px;cursor:pointer}
+.download-check-item,.download-check-item:checked{background-color:#bd93f9;z-index:999;opacity:1}
+.download-check-item:checked:after{content:"";position:absolute;top:5px;left:8px;width:8px;height:13px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg);opacity:1;z-index:999;font-weight:700}
+input[type=checkbox].download-check-item{opacity:1;z-index:999}
+.good-modal-dialog{display:none;position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);background-color:#fff;padding:20px;border-radius:5px;box-shadow:0 0 10px rgba(0,0,0,.1);z-index:1000;box-shadow:0 0 20px rgba(0,0,0,.2);width:400px}
+.modal-content{margin-bottom:20px;padding-top:15px}
+.modal-content-txt{text-align:center}
+.modal-content-head{font-size:20px;font-weight:700;margin-bottom:10px;text-align:center}
+.modal-close{position:absolute;top:5px;right:10px;font-size:24px;cursor:pointer}
+.modal-buttons{text-align:center;padding-top:15px;width:75%;margin:0 auto;display:flex;flex-direction:row;align-items:center;justify-content:space-between}
+.modal-buttons button{padding:8px 17px;margin:0 5px;border:none;border-radius:5px;cursor:pointer;font-size:16px;font-weight:700;transition:background-color .3s}
+.modal-buttons button.cancel{background-color:#ccc}
+.modal-buttons button.confirm{background-color:#bd93f9;color:#fff}
+.quota-exhausted-dialog .modal-buttons button.confirm{background-color:#0074ff;color:#fff}
+.quota-exhausted-dialog .modal-buttons button.confirm:hover{background-color:#0066e0}
+.modal-buttons button:hover{background-color:#bd93f9}
+.modal-content-loading{text-align:center;margin-top:-20px}
+.modal-content-loading .loading-txt{margin-top:25px}
+.loadEffect{width:100px;height:100px;position:relative;margin:0 auto;padding-bottom:10px}
+.loadEffect span{display:inline-block;width:16px;height:16px;border-radius:50%;background:#bd93f9;position:absolute;-webkit-animation:load 1.04s ease infinite}
+.loadEffect span:first-child{left:0;top:50%;margin-top:-8px;-webkit-animation-delay:.13s}
+.loadEffect span:nth-child(2){left:14px;top:14px;-webkit-animation-delay:.26s}
+.loadEffect span:nth-child(3){left:50%;top:0;margin-left:-8px;-webkit-animation-delay:.39s}
+.loadEffect span:nth-child(4){top:14px;right:14px;-webkit-animation-delay:.52s}
+.loadEffect span:nth-child(5){right:0;top:50%;margin-top:-8px;-webkit-animation-delay:.65s}
+.loadEffect span:nth-child(6){right:14px;bottom:14px;-webkit-animation-delay:.78s}
+.loadEffect span:nth-child(7){bottom:0;left:50%;margin-left:-8px;-webkit-animation-delay:.91s}
+.loadEffect span:nth-child(8){bottom:14px;left:14px;-webkit-animation-delay:1.04s}
+.download-click-div{display:flex;justify-content:center;align-items:center;padding:10px 0;position:sticky;top:30px;right:0;z-index:99999;flex-direction:column}
+#column-right .search-super>.download-click-div{flex-shrink:0;width:100%;pointer-events:auto}
+.download-click-all,.download-click-month,.download-click-one{padding:1px 20px;margin-left:10px;font-size:12px;color:#333;background-color:#bd93f9;border:none;border-radius:5px;cursor:pointer;text-align:center}
+#stories-viewer .progress-teleram-script,button.download-click-one.download-click-btn{position:absolute;right:0;top:0;z-index:99;font-size:12px;padding:5px;background-color:#bd93f9;border:none}
+button.download-click-all.downloadvideo{font-size:14px;padding:10px 15px}
+div#tgALL_download{color:#333;width:150px;margin-left:12px;text-align:center;font-size:14px;background-color:#fff}
+#column-right .down_btn_progress{width:100%;height:auto;z-index:999;font-size:12px;font-weight:600}
+img.logo-img{width:20px!important;height:20px!important;vertical-align:middle;margin:0 5px}
+#column-right .media-container,#column-right .search-super-container-stories .media-container{position:relative}

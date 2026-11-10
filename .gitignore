@@ -3,5 +3,8 @@
 temp/
 tmp/
 
+# Local development tooling (never bundled with the extension)
+node_modules/
+
 # Project-specific files
 dev_tools_probing/

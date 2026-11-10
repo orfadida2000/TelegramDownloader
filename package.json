@@ -1,0 +1,29 @@
+{
+  "name": "telegramdownloader",
+  "version": "1.0.0",
+  "description": "An unpacked Manifest V3 Chrome extension for **Telegram Web K** (`https://web.telegram.org/k/`). It adds in-page download controls for supported chat media, albums, media sidebar entries, and stories, and downloads the original media bytes where Web K exposes them.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orfadida2000/TelegramDownloader.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/orfadida2000/TelegramDownloader/issues"
+  },
+  "homepage": "https://github.com/orfadida2000/TelegramDownloader#readme",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0"
+  }
+}

@@ -1,786 +1,860 @@
-/******/ (function (modules) {
-  // webpackBootstrap
-  /******/ // The module cache
-  /******/ var installedModules = {};
-  /******/
-  /******/ // The require function
-  /******/ function __webpack_require__(moduleId) {
-    /******/
-    /******/ // Check if module is in cache
-    /******/ if (installedModules[moduleId]) {
-      /******/ return installedModules[moduleId].exports;
-      /******/
+/**
+ * @fileoverview Page-world Telegram Web K media resolver and binary downloader.
+ *
+ * Loaded exactly once as a regular page <script> by content/main.js. Unlike
+ * Chrome's isolated-world content scripts, this script can access rootScope's
+ * proxied Telegram managers. It performs no transcoding or recompression.
+ *
+ * Contract with the isolated world:
+ *   tvd_media_download: {type:'single'|'batch', media: DownloadRequest|DownloadRequest[]}
+ *   tvd_download_done: {ok:boolean, request_id:string, mid:string}
+ *   <request_id>_media_download_progress: {request_id, progress, download_id}
+ *
+ * A successful completion means that a browser download has been initiated;
+ * it is not a filesystem-level confirmation that the user saved the file.
+ */
+(() => {
+  "use strict";
+  if (window.__tvdInjectLoaded) return;
+  window.__tvdInjectLoaded = true;
+  document.documentElement.setAttribute("data-tvd-page-inject", "1");
+
+  const LOG_PREFIX = "[Telegram Downloader]";
+  const CHUNK_SIZE = 1024 * 1024;
+  const MAX_IN_FLIGHT_CHUNKS = 6;
+  const MAX_ATTEMPTS = 4;
+  const VIEWER_TIMEOUT_MS = 10000;
+  const OBJECT_URL_REVOKE_DELAY_MS = 60000;
+  const activeDownloads = new Map();
+  const RANGE_PATTERN = /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i;
+
+  /** @typedef {TelegramWebKDocument} TelegramDocument */
+  /** @typedef {TelegramWebKPhotoSize} TelegramPhotoSize */
+  /** @typedef {TelegramWebKPhoto} TelegramPhoto */
+  /** @typedef {{type: string, media_url?: string, resolved_url?: string, mid?: string, pid?: string, fallback_selector?: string, request_id: string, progress_id?: string, download_id?: string|number}} DownloadRequest */
+  /** @typedef {{url: string, filename?: string, mime?: string, label: string}} DownloadCandidate */
+  /** @typedef {{blob: Blob, mime: string}} DownloadedBytes */
+
+  /** @param {string} message @param {unknown} [details] */
+  const warn = (message, details) => console.warn(LOG_PREFIX, message, details ?? "");
+  /** @param {string} message @param {unknown} [details] */
+  const error = (message, details) => console.error(LOG_PREFIX, message, details ?? "");
+
+  /**
+   * Generate a stable lock key for a specific Telegram message. A numeric UI
+   * index is never treated as an actual Telegram message ID.
+   * @param {DownloadRequest} request
+   * @returns {string}
+   */
+  function getDownloadKey(request) {
+    const pid = String(request.pid ?? "").trim();
+    const mid = String(request.mid ?? "").trim();
+    if (/^-?\d+$/.test(pid) && /^\d+$/.test(mid) && mid !== "0") {
+      return `id:${pid}:${mid}`;
     }
-    /******/ // Create a new module (and put it into the cache)
-    /******/ var module = (installedModules[moduleId] = {
-      /******/ i: moduleId,
-      /******/ l: false,
-      /******/ exports: {},
-      /******/
-    });
-    /******/
-    /******/ // Execute the module function
-    /******/ modules[moduleId].call(module.exports, module, module.exports, __webpack_require__);
-    /******/
-    /******/ // Flag the module as loaded
-    /******/ module.l = true;
-    /******/
-    /******/ // Return the exports of the module
-    /******/ return module.exports;
-    /******/
+    const source = request.media_url || request.resolved_url || "";
+    if (source) return `url:${source}`;
+    if (request.fallback_selector) return `selector:${request.fallback_selector}`;
+    return "";
   }
-  /******/
-  /******/
-  /******/ // expose the modules object (__webpack_modules__)
-  /******/ __webpack_require__.m = modules;
-  /******/
-  /******/ // expose the module cache
-  /******/ __webpack_require__.c = installedModules;
-  /******/
-  /******/ // define getter function for harmony exports
-  /******/ __webpack_require__.d = function (exports, name, getter) {
-    /******/ if (!__webpack_require__.o(exports, name)) {
-      /******/ Object.defineProperty(exports, name, { enumerable: true, get: getter });
-      /******/
-    }
-    /******/
-  };
-  /******/
-  /******/ // define __esModule on exports
-  /******/ __webpack_require__.r = function (exports) {
-    /******/ if (typeof Symbol !== "undefined" && Symbol.toStringTag) {
-      /******/ Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
-      /******/
-    }
-    /******/ Object.defineProperty(exports, "__esModule", { value: true });
-    /******/
-  };
-  /******/
-  /******/ // create a fake namespace object
-  /******/ // mode & 1: value is a module id, require it
-  /******/ // mode & 2: merge all properties of value into the ns
-  /******/ // mode & 4: return value when already ns object
-  /******/ // mode & 8|1: behave like require
-  /******/ __webpack_require__.t = function (value, mode) {
-    /******/ if (mode & 1) value = __webpack_require__(value);
-    /******/ if (mode & 8) return value;
-    /******/ if (mode & 4 && typeof value === "object" && value && value.__esModule) return value;
-    /******/ var ns = Object.create(null);
-    /******/ __webpack_require__.r(ns);
-    /******/ Object.defineProperty(ns, "default", { enumerable: true, value: value });
-    /******/ if (mode & 2 && typeof value != "string")
-      for (var key in value)
-        __webpack_require__.d(
-          ns,
-          key,
-          function (key) {
-            return value[key];
-          }.bind(null, key),
-        );
-    /******/ return ns;
-    /******/
-  };
-  /******/
-  /******/ // getDefaultExport function for compatibility with non-harmony modules
-  /******/ __webpack_require__.n = function (module) {
-    /******/ var getter =
-      module && module.__esModule
-        ? /******/ function getDefault() {
-            return module["default"];
-          }
-        : /******/ function getModuleExports() {
-            return module;
-          };
-    /******/ __webpack_require__.d(getter, "a", getter);
-    /******/ return getter;
-    /******/
-  };
-  /******/
-  /******/ // Object.prototype.hasOwnProperty.call
-  /******/ __webpack_require__.o = function (object, property) {
-    return Object.prototype.hasOwnProperty.call(object, property);
-  };
-  /******/
-  /******/ // __webpack_public_path__
-  /******/ __webpack_require__.p = "/";
-  /******/
-  /******/
-  /******/ // Load entry module and return exports
-  /******/ return __webpack_require__((__webpack_require__.s = 4));
-  /******/
-})(
-  /************************************************************************/
-  /******/ {
-    /***/ 3662: /***/ function (module, exports) {
-      // (function () {
-      if (!window.__tvdInjectLoaded) {
-        var _chrome$runtime;
-        window.__tvdInjectLoaded = true;
-        const logger = {
-          // Suppress routine progress/success messages.
-          info: () => {},
-          warn: (message, details) => console.warn("[Telegram Downloader]", message, details ?? ""),
-          error: (message, details) => console.error("[Telegram Downloader]", message, details ?? ""),
-        };
-        const contentRangeRegex = /^bytes (\d+)-(\d+)\/(\d+)$/;
-        const REFRESH_DELAY = 500;
-        const isPageWorld =
-          typeof chrome === "undefined" ||
-          !(
-            (_chrome$runtime = chrome.runtime) !== null &&
-            _chrome$runtime !== void 0 &&
-            _chrome$runtime.id
-          );
-        if (isPageWorld) {
-          document.documentElement.setAttribute("data-tvd-page-inject", "1");
-        }
-        // Per-media active download locks. A key is held until its request terminates.
-        const activeDownloads = new Map();
-        function getDownloadKey(media = {}) {
-          const peerId = String(media.pid ?? "").trim();
-          const messageId = String(media.mid ?? "").trim();
-          // An index or document ID is not a Telegram message ID. Only explicitly
-          // supplied numeric peer/message IDs participate in this identity key.
-          if (/^-?\d+$/.test(peerId) && /^\d+$/.test(messageId) && messageId !== "0") {
-            return `id:${peerId}:${messageId}`;
-          }
-          const url = String(media.media_url || media.resolved_url || "");
-          if (url) return `url:${url}`;
-          if (media.fallback_selector) {
-            return `selector:${peerId}:${media.fallback_selector}:${media.type || ""}`;
-          }
-          return "";
-        }
-        function claimDownload(media = {}) {
-          const key = getDownloadKey(media);
-          // An unidentifiable file should not block unrelated downloads.
-          if (!key) return { key: "", owner: null };
-          if (activeDownloads.has(key)) {
-            logger.warn("Download already active for this media item.", {
-              type: media.type || "unknown",
-              requestId: media.request_id || "",
-            });
-            return null;
-          }
-          const owner = Symbol("active-download");
-          activeDownloads.set(key, owner);
-          return { key, owner };
-        }
-        function releaseDownload(claim) {
-          if (claim?.key && activeDownloads.get(claim.key) === claim.owner) {
-            activeDownloads.delete(claim.key);
-          }
-        }
 
-        // Receive download requests from the content script.
-        document.addEventListener("tvd_media_download", function (event) {
-          const details = event.detail || {};
-          const payload = details.media || {};
-          const pageReady = document.documentElement.getAttribute("data-tvd-page-inject") === "1";
-          if (!isPageWorld && pageReady) return;
-          const startDownload = (media) => {
-            const claim = claimDownload(media);
-            if (!claim) {
-              // Acknowledge rejected requests so callers do not wait until timeout.
-              emitDownloadDone(media, false);
-              return;
-            }
-            void resolveAndDownload(media, claim);
-          };
-          if (details.type === "single") {
-            startDownload(payload);
-          } else if (details.type === "batch") {
-            for (const media of Array.isArray(payload) ? payload : []) startDownload(media);
-          }
-        });
-        function isResolvedTelegramUrl(url = "") {
-          const value = String(url || "");
-          return (
-            value.includes("/k/stream/") ||
-            value.includes("stream/") ||
-            value.includes("/a/progressive/") ||
-            value.includes("progressive/")
-          );
-        }
-        function getCurrentPeerId() {
-          const selectors = [
-            "div.chat.active div.chat-info div.avatar",
-            "div[id=MiddleColumn] div[data-peer-id]",
-            "#column-center .chat-info .avatar",
-            "#column-center .chat-info [data-peer-id]",
-            "#column-center .topbar [data-peer-id]",
-            "#column-center .bubble[data-peer-id]",
-            "#MiddleColumn [data-peer-id]",
-          ];
-          for (const selector of selectors) {
-            var _document$querySelect;
-            const peerId =
-              (_document$querySelect = document.querySelector(selector)) === null ||
-              _document$querySelect === void 0
-                ? void 0
-                : _document$querySelect.getAttribute("data-peer-id");
-            if (peerId) return peerId;
-          }
-          return "";
-        }
-        function getInjectMediaNodeSrc(node) {
-          var _node$getAttribute, _node$querySelector;
-          if (!node) return "";
-          const src =
-            node.currentSrc ||
-            node.src ||
-            ((_node$getAttribute = node.getAttribute) === null || _node$getAttribute === void 0
-              ? void 0
-              : _node$getAttribute.call(node, "src")) ||
-            ((_node$querySelector = node.querySelector) === null ||
-            _node$querySelector === void 0 ||
-            (_node$querySelector = _node$querySelector.call(node, "source")) === null ||
-            _node$querySelector === void 0
-              ? void 0
-              : _node$querySelector.src) ||
-            "";
-          if (String(src || "").startsWith("data:")) return "";
-          if (src.startsWith("chrome-extension://") || src.startsWith("moz-extension://")) {
-            return "";
-          }
-          return src;
-        }
-        function queryViewerMediaImage(root) {
-          if (!root) return null;
-          const selectors = ["img.media-photo", "img.full-media", "img.thumbnail"];
-          for (const selector of selectors) {
-            const nodes = root.querySelectorAll(selector);
-            for (const node of nodes) {
-              var _node$classList;
-              if (
-                (_node$classList = node.classList) !== null &&
-                _node$classList !== void 0 &&
-                _node$classList.contains("logo-img")
-              )
-                continue;
-              const url = getInjectMediaNodeSrc(node);
-              if (url) return node;
-            }
-          }
-          return null;
-        }
-        function getKViewerUrl(isImage) {
-          const storyRoot = document.querySelector("#stories-viewer");
-          const root = storyRoot || document.querySelector(".media-viewer-movers");
-          if (!root) return "";
-          const video = root.querySelector("video.media-video source, video source, video");
-          const image = queryViewerMediaImage(root);
-          const videoUrl = getInjectMediaNodeSrc(video);
-          const imageUrl = getInjectMediaNodeSrc(image);
-          return isImage ? imageUrl || videoUrl : videoUrl || "";
-        }
-        function safeClick(element) {
-          if (!element || typeof element.dispatchEvent !== "function") return;
-          try {
-            const mouseEvent = document.createEvent("MouseEvents");
-            mouseEvent.initEvent("mouseover", true, true);
-            element.dispatchEvent(mouseEvent);
-            mouseEvent.initEvent("mousedown", true, true);
-            element.dispatchEvent(mouseEvent);
-            mouseEvent.initEvent("mouseup", true, true);
-            element.dispatchEvent(mouseEvent);
-            mouseEvent.initEvent("click", true, true);
-            element.dispatchEvent(mouseEvent);
-          } catch (e) {
-            var _element$click;
-            (_element$click = element.click) === null ||
-              _element$click === void 0 ||
-              _element$click.call(element);
-          }
-        }
-        function closeKViewerPage() {
-          var _closeBtn$closest;
-          const closeBtn =
-            document.querySelector("div.media-viewer-whole button.media-viewer-close") ||
-            document.querySelector("#MediaViewer button.media-viewer-close") ||
-            document.querySelector("#stories-viewer button.media-viewer-close") ||
-            document.querySelector("button.media-viewer-close");
-          if (
-            closeBtn &&
-            !(
-              (_closeBtn$closest = closeBtn.closest) !== null &&
-              _closeBtn$closest !== void 0 &&
-              _closeBtn$closest.call(closeBtn, ".media-viewer-topbar-left")
-            )
-          ) {
-            safeClick(closeBtn);
-          }
-        }
-        function emitDownloadDone(media = {}, ok = false) {
-          document.dispatchEvent(
-            new CustomEvent("tvd_download_done", {
-              detail: {
-                ok: !!ok,
-                request_id: media.request_id || "",
-                mid: media.mid || "",
-              },
-            }),
-          );
-        }
-        async function resolveKStreamUrl(media = {}) {
-          try {
-            var _window$rootScope, _message$media, _message$media2;
-            const pid = media.pid || getCurrentPeerId();
-            const mid = media.mid;
-            if (
-              !pid ||
-              !mid ||
-              !(
-                (_window$rootScope = window.rootScope) !== null &&
-                _window$rootScope !== void 0 &&
-                (_window$rootScope = _window$rootScope.managers) !== null &&
-                _window$rootScope !== void 0 &&
-                _window$rootScope.appMessagesManager
-              )
-            ) {
-              return null;
-            }
-            const message = await window.rootScope.managers.appMessagesManager.getMessageByPeer(
-              Number(pid) || pid,
-              Number(mid) || mid,
-            );
-            const doc =
-              (message === null ||
-              message === void 0 ||
-              (_message$media = message.media) === null ||
-              _message$media === void 0
-                ? void 0
-                : _message$media.document) ||
-              (message === null ||
-              message === void 0 ||
-              (_message$media2 = message.media) === null ||
-              _message$media2 === void 0 ||
-              (_message$media2 = _message$media2.webpage) === null ||
-              _message$media2 === void 0
-                ? void 0
-                : _message$media2.document);
-            if (!doc) return null;
-            const payload = {
-              dcId: doc.dc_id,
-              location: {
-                _: "inputDocumentFileLocation",
-                id: doc.id,
-                access_hash: doc.access_hash,
-                file_reference: doc.file_reference,
-              },
-              size: doc.size,
-              mimeType: doc.mime_type,
-              fileName: doc.file_name,
-            };
-            return {
-              url:
-                window.location.origin + "/k/stream/" + encodeURIComponent(JSON.stringify(payload)),
-              fileName: doc.file_name || "",
-            };
-          } catch (e) {
-            return null;
-          }
-        }
-        async function resolveViewerDomUrl(media = {}) {
-          var _element$querySelecto;
-          const isImage = String(media.type || "")
-            .toLowerCase()
-            .includes("image");
-          const existing = getKViewerUrl(isImage);
-          if (existing)
-            return {
-              url: existing,
-            };
-          const selector = media.fallback_selector;
-          if (!selector) return null;
-          const element = document.querySelector(selector);
-          if (!element) return null;
-          const clickTarget =
-            ((_element$querySelecto = element.querySelector) === null ||
-            _element$querySelecto === void 0
-              ? void 0
-              : _element$querySelecto.call(
-                  element,
-                  "img.media-photo, img.full-media, img.thumbnail, .media-inner, .video-time, .video-duration",
-                )) || element;
-          safeClick(clickTarget);
-          const startedAt = Date.now();
-          while (Date.now() - startedAt < 10000) {
-            const url = getKViewerUrl(isImage);
-            if (url)
-              return {
-                url,
-              };
-            await new Promise((resolve) => setTimeout(resolve, 250));
-          }
-          return null;
-        }
-        async function resolveAndDownload(media, claim) {
-          let url = "";
-          let ok = false;
-          try {
-            url = media.media_url || media.resolved_url || "";
-            if (!isResolvedTelegramUrl(url)) {
-              const kUrl = await resolveKStreamUrl(media);
-              if (kUrl !== null && kUrl !== void 0 && kUrl.url) url = kUrl.url;
-            }
-            if (!url || (!isResolvedTelegramUrl(url) && !url.startsWith("blob:"))) {
-              const viewer = await resolveViewerDomUrl(media);
-              if (viewer !== null && viewer !== void 0 && viewer.url) url = viewer.url;
-            }
-            if (!url) {
-              logger.error("Cannot resolve a media URL.", {
-                type: media.type || "unknown",
-                requestId: media.request_id || "",
-              });
-              return;
-            }
-            await handleFetchDownload(url, media.progress_id || media.request_id, media.download_id);
-            ok = true;
-          } catch (e) {
-            logger.error("Media download failed.", {
-              type: media.type || "unknown",
-              requestId: media.request_id || "",
-              error: e,
-            });
-          } finally {
-            // The entire fetch/retry/fallback operation has returned or failed.
-            releaseDownload(claim);
-            emitDownloadDone(media, ok);
-          }
-        }
-        const downloadMediaSequentially = (url, requestId = "", downloadId) => {
-          return new Promise((resolve, reject) => {
-            let _blobs = [];
-            let _next_offset = 0;
-            let _total_size = null;
-            let _file_extension = "mp4";
-            let mimeType = "application/octet-stream";
-            let settled = false;
-            let fileName =
-              (Math.random() + 1).toString(36).substring(2, 10) + "." + _file_extension;
-            try {
-              const metadata = JSON.parse(
-                decodeURIComponent(url.split("/")[url.split("/").length - 1]),
-              );
-              if (metadata.fileName) {
-                fileName = metadata.fileName;
-              } else if (metadata.location && metadata.location.id) {
-                fileName = metadata.location.id + "." + _file_extension;
-              }
-            } catch (e) {
-              // Invalid JSON string, pass extracting fileName
-            }
-            logger.info(`URL: ${url}`, fileName);
-            const finish = (ok, reason) => {
-              if (settled) return;
-              settled = true;
-              if (ok) resolve();
-              else reject(reason || new Error("download failed"));
-            };
-            const fetchNextPart = () => {
-              fetch(url, {
-                method: "GET",
-                headers: {
-                  Range: `bytes=${_next_offset}-`,
-                },
-                "User-Agent":
-                  "User-Agent Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/117.0",
-              })
-                .then((res) => {
-                  if (![200, 206].includes(res.status)) {
-                    throw new Error("Non 200/206 response was received: " + res.status);
-                  }
-                  mimeType = res.headers.get("Content-Type") || "application/octet-stream";
-                  _file_extension = normalizeFileExtension(mimeType);
-                  fileName = fileName.substring(0, fileName.indexOf(".") + 1) + _file_extension;
-                  const range = res.headers.get("Content-Range");
-                  const match =
-                    range === null || range === void 0 ? void 0 : range.match(contentRangeRegex);
-                  if (!match) {
-                    _total_size = Number(res.headers.get("Content-Length")) || 0;
-                    _next_offset = _total_size;
-                    return res.blob();
-                  }
-                  const startOffset = parseInt(match[1]);
-                  const endOffset = parseInt(match[2]);
-                  const totalSize = parseInt(match[3]);
-                  if (startOffset !== _next_offset) {
-                    logger.error("Gap detected between responses.", fileName);
-                    logger.info("Last offset: " + _next_offset, fileName);
-                    logger.info("New start offset " + match[1], fileName);
-                    throw "Gap detected between responses.";
-                  }
-                  if (_total_size && totalSize !== _total_size) {
-                    logger.error("Total size differs", fileName);
-                    throw "Total size differs";
-                  }
-                  _next_offset = endOffset + 1;
-                  _total_size = totalSize;
-                  logger.info(
-                    `Get response: ${res.headers.get("Content-Length")} bytes data from ${res.headers.get("Content-Range")}`,
-                    fileName,
-                  );
-                  logger.info(
-                    `Progress: ${((_next_offset * 100) / _total_size).toFixed(0)}%`,
-                    fileName,
-                  );
-                  // Define an event to transmit the download progress of the file：
-                  if (requestId) {
-                    const mediaDownloadProgress = new CustomEvent(requestId + "_media_download_progress", {
-                      detail: {
-                        request_id: requestId,
-                        progress: ((_next_offset * 100) / _total_size).toFixed(0),
-                        download_id: downloadId,
-                      },
-                    });
-                    // trigger event
-                    document.dispatchEvent(mediaDownloadProgress);
-                  }
-                  return res.blob();
-                })
-                .then((resBlob) => {
-                  _blobs.push(resBlob);
-                })
-                .then(() => {
-                  if (!_total_size) {
-                    if (_blobs.length) {
-                      save();
-                      return;
-                    }
-                    throw new Error("_total_size is NULL");
-                  }
-                  if (_next_offset < _total_size) {
-                    fetchNextPart();
-                  } else {
-                    save();
-                  }
-                })
-                .catch((reason) => {
-                  logger.error(reason, fileName);
-                  finish(false, reason);
-                });
-            };
-            const save = () => {
-              logger.info("Finish downloading blobs", fileName);
-              logger.info("Concatenating blobs and downloading...", fileName);
-              const blob = new Blob(_blobs, {
-                type: mimeType,
-              });
-              const blobUrl = window.URL.createObjectURL(blob);
-              logger.info("Final blob size: " + blob.size + " bytes", fileName);
-              const a = document.createElement("a");
-              document.body.appendChild(a);
-              a.href = blobUrl;
-              a.download = fileName;
-              a.click();
-              document.body.removeChild(a);
-              window.URL.revokeObjectURL(blobUrl);
-              logger.info("Download triggered", fileName);
-              updateProgress("100.00", requestId, downloadId);
-              finish(true);
-            };
-            fetchNextPart();
-          });
-        };
-        async function fetchUrl(url) {
-          let t = await fetch(url, {
-            headers: {
-              Range: "bytes=0-",
-            },
-          });
-          if (!t.ok) throw Error(`HTTP error! Status: ${t.status}`);
-          let r = parseInt(t.headers.get("Content-Range").split("/")[1], 10),
-            o = parseInt(t.headers.get("Content-Length"), 10),
-            n = t.headers.get("Content-Type"),
-            s = t.headers.get("Accept-Ranges");
-          if ("bytes" !== s) throw Error("Server does not support partial content (byte ranges)");
-          return {
-            contentType: n,
-            segmentCount: Math.ceil(r / o),
-            contentSize: r,
-            segmentSize: o,
-          };
-        }
-        async function handleFetchDownload(url, requestId, downloadId) {
-          let params = {
-            autoRetry: !0,
-            progress: () => {},
-            check: void 0,
-          };
-          if (url.startsWith("blob:")) {
-            return downloadMediaSequentially(url, requestId, downloadId);
-          }
-          let { autoRetry: a, progress: l, check: s } = params;
-          try {
-            let {
-              segmentCount: n,
-              segmentSize: c,
-              contentSize: d,
-              contentType: f,
-            } = await fetchUrl(url);
-            let progress = Array(n)
-                .fill(0)
-                .map((e, t) => t * c)
-                .map((t, r) => {
-                  let a = Math.min(t + c - 1, d - 1),
-                    o = {
-                      Range: `bytes=${t}-${a}`,
-                    };
-                  return () =>
-                    fetch(url, {
-                      headers: o,
-                    }).then((res) => {
-                      if (res.status !== 206) {
-                        throw new Error(`HTTP ${res.status} for media byte range ${t}-${a}`);
-                      }
-                      let prog = ((a / d) * 100).toFixed(2);
-                      logger.info(`Progress: ${prog}%`);
-                      return (updateProgress(prog, requestId, downloadId), res.arrayBuffer());
-                    });
-                }),
-              name = getFileNameFromUrl(url, f),
-              h = await getResult(progress, 20, 3),
-              m = new Blob(h, {
-                type: f || "application/octet-stream",
-              });
-            // return i(!1), URL.createObjectURL(m);
-            let downloadUrl = URL.createObjectURL(m);
-            updateProgress("100.00", requestId, downloadId);
-            return save(downloadUrl, name);
-          } catch (e) {
-            logger.warn("Parallel media download failed; trying sequential fallback.", { error: e });
-            try {
-              await downloadMediaSequentially(url, requestId, downloadId);
-              return;
-            } catch (retryError) {
-              if (url && !String(url).startsWith("blob:")) {
-                logger.warn("Both fetch methods failed; handing URL to browser (result unverified).", {
-                  error: retryError,
-                });
-                save(url, getFileNameFromUrl(url, "application/octet-stream"));
-                updateProgress("100.00", requestId, downloadId);
-                return;
-              }
-              throw retryError || e;
-            }
-          }
-        }
-        async function getResult(tasks, batchSize = 20, maxRetries = 3) {
-          const results = [];
-          for (let start = 0; start < tasks.length; start += batchSize) {
-            const batch = tasks.slice(start, start + batchSize);
-            for (let attempt = 0; ; attempt++) {
-              try {
-                const parts = await Promise.all(batch.map((task) => task()));
-                results.push(...parts);
-                break;
-              } catch (error) {
-                if (attempt >= maxRetries) {
-                  logger.error("Media segment batch exhausted retries.", {
-                    batchStart: start,
-                    attempts: attempt + 1,
-                    error,
-                  });
-                  throw error;
-                }
-                const delayMs = Math.min(500 * 2 ** attempt, 4000);
-                logger.warn("Media segment batch failed; retrying.", {
-                  batchStart: start,
-                  attempt: attempt + 1,
-                  maxAttempts: maxRetries + 1,
-                  delayMs,
-                  error,
-                });
-                await setRefresh(delayMs);
-              }
-            }
-          }
-          return results;
-        }
-        async function setRefresh(e) {
-          return new Promise((t, n) => {
-            setTimeout(() => {
-              t(null);
-            }, e);
-          });
-        }
-        function save(e, t, n) {
-          let r = document.createElement("a");
-          r.href = e;
-          r.download = t || "download";
-          r.rel = "noopener";
-          r.style.display = "none";
-          document.body.appendChild(r);
-          r.click();
-          document.body.removeChild(r);
-        }
-        function normalizeFileExtension(type) {
-          const mime = String(type || "")
-            .split(";")[0]
-            .trim()
-            .toLowerCase();
-          const subtype = (mime.split("/")[1] || "").trim();
-          if (subtype === "mpeg" || subtype === "mp3") return "mp3";
-          if (subtype === "ogg" || subtype === "oga" || subtype === "opus") return "ogg";
-          if (subtype === "wav" || subtype === "x-wav") return "wav";
-          if (subtype === "webm") return "webm";
-          if (subtype === "mp4") return "mp4";
-          return subtype.replace(/[^a-z0-9]+/g, "") || "bin";
-        }
-        function getFileNameFromUrl(url, type) {
-          let _file_extension = normalizeFileExtension(type);
-          let fileName = "";
-          try {
-            let metadata = "";
-            if (url.includes("progressive/")) {
-              //a-version
-              metadata = url.split("document").slice(1);
-              fileName = metadata + "." + _file_extension;
-            } else {
-              //k-version
-              metadata = JSON.parse(decodeURIComponent(url.split("/").slice(-1)[0]));
-              if (metadata.fileName) {
-                fileName = metadata.fileName;
-              } else if (metadata.location && metadata.location.id) {
-                fileName = metadata.location.id + "." + _file_extension;
-              }
-            }
-            logger.info(`URL:${fileName}`);
-          } catch (e) {
-            // Invalid JSON string, pass extracting fileName
-          }
-          if (!fileName) {
-            fileName = (Math.random() + 1).toString(36).substring(2, 10) + "." + _file_extension;
-          }
-          return fileName;
-        }
-        function updateProgress(p, requestId, downloadId) {
-          // Define an event to transmit the download progress of the file：
-          logger.info(`updateProgress: ${p},${requestId},${downloadId},`);
-          if (requestId) {
-            const mediaDownloadProgress = new CustomEvent(requestId + "_media_download_progress", {
-              detail: {
-                request_id: requestId,
-                progress: p,
-                download_id: downloadId,
-              },
-            });
-            // trigger event
-            document.dispatchEvent(mediaDownloadProgress);
-          }
-        }
+  /**
+   * Atomically claim an in-flight request, or reject a concurrent duplicate.
+   * @param {DownloadRequest} request
+   * @returns {{key: string, owner: symbol}|null}
+   */
+  function claimDownload(request) {
+    const key = getDownloadKey(request);
+    if (key && activeDownloads.has(key)) return null;
+    const owner = Symbol("telegram-download");
+    if (key) activeDownloads.set(key, owner);
+    return { key, owner };
+  }
+
+  /** @param {{key: string, owner: symbol}} claim */
+  function releaseDownload(claim) {
+    if (claim.key && activeDownloads.get(claim.key) === claim.owner) {
+      activeDownloads.delete(claim.key);
+    }
+  }
+
+  /**
+   * Acknowledge completion or failure exactly once for each accepted request.
+   * @param {DownloadRequest} request
+   * @param {boolean} ok
+   */
+  function emitDone(request, ok) {
+    document.dispatchEvent(
+      new CustomEvent("tvd_download_done", {
+        detail: { ok, request_id: request.request_id || "", mid: request.mid || "" },
+      }),
+    );
+  }
+
+  /**
+   * Emit a request-specific percentage; use 'error' to restore the download UI
+   * without mistakenly reporting 100% when the fetch has failed.
+   * @param {DownloadRequest} request
+   * @param {number|'error'} progress
+   */
+  function emitProgress(request, progress) {
+    const id = request.progress_id || request.request_id;
+    if (!id) return;
+    const value =
+      typeof progress === "number" ? Math.max(0, Math.min(100, progress)).toFixed(2) : progress;
+    document.dispatchEvent(
+      new CustomEvent(id + "_media_download_progress", {
+        detail: { request_id: id, progress: value, download_id: request.download_id },
+      }),
+    );
+  }
+
+  /**
+   * Accept only Telegram-origin or Telegram-created blob URLs as downloaded
+   * sources; never hand arbitrary page-provided external URLs to fetch().
+   * @param {string} value
+   * @returns {boolean}
+   */
+  function isUsableUrl(value) {
+    if (typeof value !== "string" || !value) return false;
+    if (value.startsWith("blob:")) {
+      return value.startsWith(`blob:${window.location.origin}/`);
+    }
+    try {
+      const url = new URL(value, window.location.origin);
+      return (
+        url.origin === window.location.origin &&
+        ["http:", "https:"].includes(url.protocol) &&
+        !/\.m3u8(?:\?|$)/i.test(url.pathname)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Determine the active Telegram chat peer from stable Web K DOM hints.
+   * An explicitly supplied peer ID remains authoritative for album items.
+   * @returns {string}
+   */
+  function getCurrentPeerId() {
+    for (const selector of [
+      "#column-center .topbar [data-peer-id]",
+      "#column-center .bubble[data-peer-id]",
+      "#MiddleColumn [data-peer-id]",
+      "#column-right [data-peer-id]",
+    ]) {
+      const id = document.querySelector(selector)?.getAttribute("data-peer-id");
+      if (id) return id;
+    }
+    return "";
+  }
+
+  /**
+   * Retrieve message metadata through Web K's asynchronous worker proxies.
+   * @param {DownloadRequest} request
+   * @returns {Promise<{message: TelegramWebKMessage, managers: TelegramWebKManagers}|null>}
+   */
+  async function lookupMessage(request) {
+    const managers = window.rootScope?.managers;
+    const pid = String(request.pid || getCurrentPeerId());
+    const mid = String(request.mid || "");
+    if (
+      !managers?.appMessagesManager?.getMessageByPeer ||
+      !/^-?\d+$/.test(pid) ||
+      !/^\d+$/.test(mid) ||
+      mid === "0"
+    )
+      return null;
+    try {
+      const message = await managers.appMessagesManager.getMessageByPeer(Number(pid), Number(mid));
+      return message ? { message, managers } : null;
+    } catch (exception) {
+      warn("Message metadata unavailable; trying DOM/viewer fallback.", exception);
+      return null;
+    }
+  }
+
+  /**
+   * Select the largest genuinely downloadable photo size, not a stripped or
+   * embedded preview. Progressive sizes report their largest available byte
+   * segment in the sizes array. Dimensions take priority over byte length.
+   * @param {TelegramPhoto} photo
+   * @returns {TelegramPhotoSize|null}
+   */
+  function chooseLargestPhotoSize(photo) {
+    const candidates = Array.isArray(photo?.sizes)
+      ? photo.sizes.filter(
+          (size) =>
+            size &&
+            Number(size.w) > 0 &&
+            Number(size.h) > 0 &&
+            size._ !== "photoStrippedSize" &&
+            size._ !== "photoSizeEmpty",
+        )
+      : [];
+    candidates.sort((a, b) => {
+      const area = Number(b.w) * Number(b.h) - Number(a.w) * Number(a.h);
+      if (area) return area;
+      /** @param {TelegramPhotoSize} size */
+      const bytes = (size) =>
+        Number(size.size) || (Array.isArray(size.sizes) ? Number(size.sizes.at(-1)) : 0) || 0;
+      return bytes(b) - bytes(a);
+    });
+    return candidates[0] || null;
+  }
+
+  /**
+   * Determine the original name of a Telegram document, including the
+   * documentAttributeFilename representation when file_name is absent.
+   * @param {TelegramDocument} doc
+   * @returns {string}
+   */
+  function documentFilename(doc) {
+    return String(
+      doc.file_name ||
+        doc.attributes?.find((attr) => attr?._ === "documentAttributeFilename")?.file_name ||
+        "",
+    );
+  }
+
+  /**
+   * Encode the same document-file descriptor used by the previous extension's
+   * Web K /k/stream endpoint. No video conversion or alternate transcode occurs.
+   * @param {TelegramDocument} doc
+   * @returns {DownloadCandidate|null}
+   */
+  function documentCandidate(doc) {
+    if (!doc?.id || doc.dc_id == null || !doc.access_hash || !doc.file_reference) return null;
+    const filename = documentFilename(doc);
+    const descriptor = {
+      dcId: doc.dc_id,
+      location: {
+        _: "inputDocumentFileLocation",
+        id: doc.id,
+        access_hash: doc.access_hash,
+        file_reference: doc.file_reference,
+      },
+      size: doc.size,
+      mimeType: doc.mime_type,
+      fileName: filename,
+    };
+    return {
+      url: `${window.location.origin}/k/stream/${encodeURIComponent(JSON.stringify(descriptor))}`,
+      filename,
+      mime: String(doc.mime_type || ""),
+      label: `document ${String(doc.id)}`,
+    };
+  }
+
+  /**
+   * Retrieve alternate video documents from the message or Web K's document
+   * registry. The primary document is kept first because it is the uploaded
+   * original/source. Transcoded alternatives are only failure fallbacks.
+   * @param {TelegramWebKMessageMedia} messageMedia
+   * @param {TelegramDocument} primary
+   * @param {TelegramWebKManagers} managers
+   * @returns {Promise<TelegramDocument[]>}
+   */
+  async function getVideoDocuments(messageMedia, primary, managers) {
+    let alternatives = Array.isArray(messageMedia?.alt_documents) ? messageMedia.alt_documents : [];
+    if (!alternatives.length && managers?.appDocsManager?.getAltDocsByDocument) {
+      try {
+        const result = await managers.appDocsManager.getAltDocsByDocument(primary.id);
+        if (Array.isArray(result)) alternatives = result;
+      } catch (exception) {
+        warn("Alternate video document lookup failed.", exception);
       }
+    }
+    const seen = new Set([String(primary.id)]);
+    const unique = alternatives.filter((doc) => {
+      if (!doc?.id || seen.has(String(doc.id))) return false;
+      seen.add(String(doc.id));
+      return true;
+    });
+    /** @param {TelegramDocument} doc */
+    const resolution = (doc) => {
+      const attr = doc.attributes?.find((value) => value?._ === "documentAttributeVideo");
+      return Number(attr?.w || 0) * Number(attr?.h || 0);
+    };
+    unique.sort(
+      (a, b) => resolution(b) - resolution(a) || Number(b.size || 0) - Number(a.size || 0),
+    );
+    return [primary, ...unique];
+  }
 
-      /***/
-    },
+  /**
+   * Construct quality-aware candidate factories in fidelity preference order.
+   * A photo's largest variant is resolved directly through apiFileManager;
+   * a document uses its original byte stream (alt video files follow only if
+   * the original cannot be fetched). Viewer/DOM fallbacks are appended later.
+   * @param {DownloadRequest} request
+   * @param {{message: TelegramWebKMessage, managers: TelegramWebKManagers}|null} lookup
+   * @returns {Promise<{candidates: Array<() => Promise<DownloadCandidate|null>>, photoSize: TelegramPhotoSize|null}>}
+   */
+  async function messageCandidates(request, lookup) {
+    /** @type {Array<() => Promise<DownloadCandidate|null>>} */
+    const candidates = [];
+    /** @type {TelegramPhotoSize|null} */
+    let photoSize = null;
+    if (!lookup) return { candidates, photoSize };
+    const { message, managers } = lookup;
+    const media = message.media || {};
+    const photo = media.photo || media.webpage?.photo;
+    const doc = media.document || media.webpage?.document;
+    const kind = String(request.type || "").toLowerCase();
+    if (photo && (kind.includes("image") || kind === "img")) {
+      photoSize = chooseLargestPhotoSize(photo);
+      const fileManager = managers.apiFileManager;
+      if (photoSize && fileManager?.downloadMediaURL) {
+        const selectedSize = photoSize;
+        candidates.push(async () => ({
+          url: await fileManager.downloadMediaURL({ media: photo, thumb: selectedSize }),
+          filename: `photo_${String(message.id || request.mid || photo.id)}`,
+          mime: "image/jpeg",
+          label: `photo ${String(photo.id)} (${selectedSize.w}x${selectedSize.h})`,
+        }));
+      }
+    }
+    if (doc) {
+      const docs = kind.includes("video") ? await getVideoDocuments(media, doc, managers) : [doc];
+      for (const document of docs) {
+        const candidate = documentCandidate(document);
+        if (candidate) candidates.push(async () => candidate);
+      }
+    }
+    return { candidates, photoSize };
+  }
 
-    /***/ 4: /***/ function (module, exports, __webpack_require__) {
-      module.exports = __webpack_require__("3662");
+  /** @param {Element|null} node @returns {string} */
+  function getMediaNodeSrc(node) {
+    if (!node) return "";
+    const mediaNode = /** @type {HTMLMediaElement|HTMLImageElement} */ (node);
+    const source =
+      mediaNode.currentSrc ||
+      mediaNode.src ||
+      node.getAttribute?.("src") ||
+      node.querySelector?.("source")?.src ||
+      "";
+    return isUsableUrl(String(source)) ? String(source) : "";
+  }
 
-      /***/
-    },
+  /**
+   * Ignore hidden viewers left mounted in Telegram's SPA DOM. A hidden prior
+   * story/photo must never be mistaken for the preview we just opened.
+   * @param {Element|null} element
+   * @returns {boolean}
+   */
+  function isVisibleViewer(element) {
+    if (!element || element.classList.contains("hide") || element.classList.contains("is-hidden"))
+      return false;
+    const style = getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
 
-    /******/
-  },
-);
+  /**
+   * Read the best active viewer source, preferring the largest decoded image.
+   * @param {'image'|'video'} kind
+   * @returns {{url: string, width: number, height: number}|null}
+   */
+  function getViewerSource(kind) {
+    const roots = [
+      document.querySelector("#stories-viewer"),
+      document.querySelector(".media-viewer-movers"),
+    ].filter((root) => root !== null);
+    for (const root of roots) {
+      const viewer = root.closest(".media-viewer-whole, #MediaViewer, #stories-viewer") || root;
+      if (!isVisibleViewer(viewer)) continue;
+      if (kind === "video") {
+        const source = root.querySelector("video.media-video source, video source, video");
+        const url = getMediaNodeSrc(source);
+        if (url) return { url, width: 0, height: 0 };
+      } else {
+        const images = [
+          .../** @type {NodeListOf<HTMLImageElement>} */ (
+            root.querySelectorAll("img.media-photo, img.full-media, img.thumbnail")
+          ),
+        ];
+        const choices = images
+          .filter((img) => !img.classList.contains("logo-img"))
+          .map((img) => ({
+            url: getMediaNodeSrc(img),
+            width: img.naturalWidth || 0,
+            height: img.naturalHeight || 0,
+          }))
+          .filter((image) => image.url);
+        choices.sort((a, b) => b.width * b.height - a.width * a.height);
+        if (choices.length) return choices[0];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Reproduce a Telegram click for the exceptional last-resort viewer path.
+   * @param {Element} element
+   */
+  function dispatchClick(element) {
+    if (!element) return;
+    for (const type of ["mouseover", "mousedown", "mouseup", "click"]) {
+      element.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, cancelable: true, view: window }),
+      );
+    }
+  }
+
+  /** @returns {boolean} Whether any existing media viewer is visibly open. */
+  function viewerIsOpen() {
+    return [
+      ...document.querySelectorAll(".media-viewer-whole, #MediaViewer, #stories-viewer"),
+    ].some(isVisibleViewer);
+  }
+
+  /**
+   * Close only the preview this resolver opened; do not close a pre-existing
+   * user viewer or depend on a positional toolbar-button index.
+   */
+  function closeOpenedViewer() {
+    const close = document.querySelector(
+      "div.media-viewer-whole button.media-viewer-close, #MediaViewer button.media-viewer-close, #stories-viewer button.media-viewer-close",
+    );
+    if (close) dispatchClick(close);
+  }
+
+  /**
+   * Open the viewer only after direct/DOM candidates have failed. For photos,
+   * wait for the requested full-size dimensions rather than taking the first
+   * low-resolution thumbnail to appear. Caller owns cleanup until fetch ends.
+   * @param {DownloadRequest} request
+   * @param {TelegramPhotoSize|null} targetSize
+   * @returns {Promise<{candidate: DownloadCandidate, cleanup: () => void}|null>}
+   */
+  async function viewerCandidate(request, targetSize) {
+    if (!request.fallback_selector || viewerIsOpen()) return null;
+    const host = document.querySelector(request.fallback_selector);
+    if (!host) return null;
+    const target =
+      host.querySelector(
+        ".album-item-media, .media-inner, img.media-photo, img.thumbnail, video.media-video, .video-time, .video-duration",
+      ) || host;
+    const kind = /^(img|image)$/i.test(request.type) ? "image" : "video";
+    dispatchClick(target);
+    let best = null;
+    const targetArea = Number(targetSize?.w || 0) * Number(targetSize?.h || 0);
+    const deadline = Date.now() + VIEWER_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const source = getViewerSource(kind);
+      if (source) {
+        if (!best || source.width * source.height >= best.width * best.height) best = source;
+        if (kind === "video" || !targetArea || source.width * source.height >= targetArea) break;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 200));
+    }
+    if (!best) {
+      closeOpenedViewer();
+      return null;
+    }
+    return {
+      candidate: {
+        url: best.url,
+        filename: kind === "image" ? `photo_${request.mid || "unknown"}` : "",
+        mime: kind === "image" ? "image/jpeg" : "",
+        label: "viewer fallback",
+      },
+      cleanup: closeOpenedViewer,
+    };
+  }
+
+  /**
+   * Parse RFC 7233 Content-Range and reject malformed/unknown lengths.
+   * @param {string|null} header
+   * @returns {{start: number, end: number, total: number}|null}
+   */
+  function parseContentRange(header) {
+    const match = String(header || "").match(RANGE_PATTERN);
+    if (!match || match[3] === "*") return null;
+    const start = Number(match[1]),
+      end = Number(match[2]),
+      total = Number(match[3]);
+    if (
+      ![start, end, total].every(Number.isSafeInteger) ||
+      start < 0 ||
+      end < start ||
+      end >= total
+    ) {
+      return null;
+    }
+    return { start, end, total };
+  }
+
+  /**
+   * Retry transient network/HTTP failures with bounded exponential backoff.
+   * @param {string} url
+   * @param {RequestInit} options
+   * @returns {Promise<Response>}
+   */
+  async function fetchWithRetries(url, options) {
+    let lastError;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try {
+        const response = await fetch(url, options);
+        if (response.ok) return response;
+        if (![408, 429, 500, 502, 503, 504].includes(response.status)) {
+          throw new Error(`Non-retryable HTTP ${response.status}`);
+        }
+        lastError = new Error(`HTTP ${response.status}`);
+      } catch (exception) {
+        lastError = exception;
+        const message = exception instanceof Error ? exception.message : String(exception);
+        if (options.signal?.aborted || /Non-retryable/.test(message)) throw exception;
+      }
+      if (attempt < MAX_ATTEMPTS - 1) {
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, Math.min(300 * 2 ** attempt, 2400)),
+        );
+      }
+    }
+    throw lastError || new Error("Media fetch failed");
+  }
+
+  /**
+   * Consume an ordinary 200 response using streams when available. Supports
+   * media endpoints without Range support and all object-URL sources.
+   * @param {Response} response
+   * @param {DownloadRequest} request
+   * @param {string} hint
+   * @returns {Promise<DownloadedBytes>}
+   */
+  async function readFullResponse(response, request, hint) {
+    const total = Number(response.headers.get("Content-Length")) || 0;
+    const mime = response.headers.get("Content-Type") || hint || "application/octet-stream";
+    if (!response.body?.getReader) {
+      const blob = await response.blob();
+      emitProgress(request, 99.99);
+      return { blob: blob.type ? blob : new Blob([blob], { type: mime }), mime };
+    }
+    const reader = response.body.getReader();
+    const parts = [];
+    let received = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        received += value.byteLength;
+        if (total) emitProgress(request, Math.min(99.99, (received * 100) / total));
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    if (total && total !== received)
+      throw new Error(`Truncated response: ${received}/${total} bytes`);
+    return { blob: new Blob(parts, { type: mime }), mime };
+  }
+
+  /**
+   * Fetch the original binary bytes with Range verification when supported.
+   * A 200 response is consumed directly; each 206 is validated for expected
+   * offset, length and total. Fallback never silently saves partial data.
+   * @param {DownloadCandidate} candidate
+   * @param {DownloadRequest} request
+   * @returns {Promise<DownloadedBytes>}
+   */
+  async function downloadBytes(candidate, request) {
+    const url = candidate.url;
+    if (!isUsableUrl(url)) throw new Error("Unsupported or untrusted media URL");
+    if (url.startsWith("blob:")) {
+      const response = await fetchWithRetries(url, {});
+      return readFullResponse(response, request, candidate.mime || "");
+    }
+
+    // Discover the server's actual range unit. Some Telegram endpoints serve
+    // fewer bytes than requested; subsequent requests use the observed size.
+    const first = await fetchWithRetries(url, { headers: { Range: `bytes=0-${CHUNK_SIZE - 1}` } });
+    if (first.status === 200) return readFullResponse(first, request, candidate.mime || "");
+    if (first.status !== 206) throw new Error(`Expected 206, got HTTP ${first.status}`);
+    const initialRange = parseContentRange(first.headers.get("Content-Range"));
+    if (!initialRange || initialRange.start !== 0) {
+      throw new Error("Invalid initial Content-Range");
+    }
+    const initialBytes = await first.arrayBuffer();
+    if (initialBytes.byteLength !== initialRange.end + 1) {
+      throw new Error("Truncated initial media segment");
+    }
+    const mime = first.headers.get("Content-Type") || candidate.mime || "application/octet-stream";
+    const total = initialRange.total;
+    const segmentSize = initialBytes.byteLength;
+    const remainingCount = Math.ceil((total - segmentSize) / segmentSize);
+    const parts = new Array(remainingCount + 1);
+    parts[0] = initialBytes;
+    let received = segmentSize;
+    let nextJob = 0;
+    emitProgress(request, Math.min(99.99, (100 * received) / total));
+    if (!remainingCount) return { blob: new Blob(parts, { type: mime }), mime };
+
+    const controller = new AbortController();
+    /**
+     * Independently fetch and validate one range at a time per worker. The
+     * indexed result array guarantees ordered reassembly regardless of which
+     * requests finish first; the shared byte counter reports actual progress.
+     * @returns {Promise<void>}
+     */
+    async function worker() {
+      while (nextJob < remainingCount && !controller.signal.aborted) {
+        const job = nextJob++;
+        const from = segmentSize * (job + 1);
+        const to = Math.min(total - 1, from + segmentSize - 1);
+        const response = await fetchWithRetries(url, {
+          headers: { Range: `bytes=${from}-${to}` },
+          signal: controller.signal,
+        });
+        if (response.status !== 206) throw new Error("Server stopped honoring byte ranges");
+        const range = parseContentRange(response.headers.get("Content-Range"));
+        if (!range || range.start !== from || range.end !== to || range.total !== total) {
+          throw new Error(`Unexpected Content-Range for byte range ${from}-${to}`);
+        }
+        const bytes = await response.arrayBuffer();
+        if (bytes.byteLength !== to - from + 1) {
+          throw new Error(`Truncated media segment ${from}-${to}`);
+        }
+        parts[job + 1] = bytes;
+        received += bytes.byteLength;
+        emitProgress(request, Math.min(99.99, (100 * received) / total));
+      }
+    }
+    const workers = Array.from({ length: Math.min(MAX_IN_FLIGHT_CHUNKS, remainingCount) }, worker);
+    try {
+      await Promise.all(workers);
+    } catch (exception) {
+      controller.abort();
+      await Promise.allSettled(workers);
+      throw exception;
+    }
+    if (received !== total || parts.some((part) => !part)) {
+      throw new Error(`Incomplete download: ${received}/${total} bytes`);
+    }
+    return { blob: new Blob(parts, { type: mime }), mime };
+  }
+
+  /**
+   * Derive a suitable filename extension from the actual response MIME type;
+   * never label a downloaded photo as MP4 solely because its URL is a blob.
+   * @param {string} mime
+   * @returns {string}
+   */
+  function extensionForMime(mime) {
+    const type = String(mime || "")
+      .split(";")[0]
+      .toLowerCase()
+      .trim();
+    /** @type {Record<string,string>} */
+    const known = {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+      "image/gif": "gif",
+      "image/avif": "avif",
+      "video/mp4": "mp4",
+      "video/webm": "webm",
+      "video/quicktime": "mov",
+      "audio/mpeg": "mp3",
+      "audio/ogg": "ogg",
+      "audio/mp4": "m4a",
+      "audio/wav": "wav",
+      "audio/webm": "webm",
+      "text/plain": "txt",
+      "application/pdf": "pdf",
+      "application/zip": "zip",
+    };
+    return (
+      known[type] ||
+      (type.includes("/") ? type.split("/")[1].replace(/[^a-z0-9]+/g, "") : "") ||
+      "bin"
+    );
+  }
+
+  /**
+   * Decode a candidate's original descriptor when Telegram provides no
+   * filename separately; avoid trusting a URL path as a filename.
+   * @param {string} url
+   * @returns {string}
+   */
+  function filenameFromStream(url) {
+    try {
+      const component = url.slice(url.lastIndexOf("/") + 1);
+      const meta = JSON.parse(decodeURIComponent(component));
+      return typeof meta.fileName === "string" ? meta.fileName : "";
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * Sanitize filenames to one portable name while preserving provided Unicode,
+   * original extensions, and the name of a document uploaded as a file.
+   * @param {DownloadCandidate} candidate
+   * @param {DownloadRequest} request
+   * @param {DownloadedBytes} downloaded
+   * @returns {string}
+   */
+  function filenameFor(candidate, request, downloaded) {
+    let filename = String(candidate.filename || filenameFromStream(candidate.url) || "");
+
+    filename = filename
+      // eslint-disable-next-line no-control-regex -- Intentionally sanitize ASCII control characters.
+      .replace(/[\\/:*?"<>|\x00-\x1f]/g, "_")
+      .trim()
+      .replace(/[. ]+$/, "");
+    if (!filename) filename = `telegram_${String(request.mid || "download")}`;
+
+    const ext = extensionForMime(downloaded.mime || downloaded.blob.type || candidate.mime || "");
+    if (!/\.[a-z0-9]{1,12}$/i.test(filename)) filename += `.${ext}`;
+
+    return filename;
+  }
+
+  /**
+   * Initiate the browser save using a newly minted object URL. Keep the URL
+   * alive briefly after click so download managers have time to claim it.
+   * @param {Blob} blob
+   * @param {string} filename
+   */
+  function saveBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.rel = "noopener";
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    try {
+      anchor.click();
+    } finally {
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), OBJECT_URL_REVOKE_DELAY_MS);
+    }
+  }
+
+  /**
+   * Attempt a candidate completely, including the actual fetch and download.
+   * Source discovery alone is not treated as success.
+   * @param {DownloadCandidate} candidate
+   * @param {DownloadRequest} request
+   * @returns {Promise<boolean>}
+   */
+  async function attemptCandidate(candidate, request) {
+    const downloaded = await downloadBytes(candidate, request);
+    if (!downloaded.blob.size) throw new Error("Empty downloaded payload");
+    saveBlob(downloaded.blob, filenameFor(candidate, request, downloaded));
+    emitProgress(request, 100);
+    return true;
+  }
+
+  /**
+   * Try source-quality candidates in the right order, retrying another source
+   * after a failed fetch. Photos use full-size -> viewer -> DOM; videos use
+   * original -> alternate(s) -> DOM -> viewer. The viewer is never the first
+   * resolution step for normal chat or album videos.
+   * @param {DownloadRequest} request
+   * @returns {Promise<boolean>}
+   */
+  async function resolveAndDownload(request) {
+    const lookup = await lookupMessage(request);
+    const { candidates, photoSize } = await messageCandidates(request, lookup);
+    const kind = String(request.type || "").toLowerCase();
+    const isImage = kind === "img" || kind === "image";
+    const domUrl = String(request.media_url || request.resolved_url || "");
+    const dom = isUsableUrl(domUrl)
+      ? {
+          url: domUrl,
+          label: "existing DOM source",
+          filename: "",
+          mime: "",
+        }
+      : null;
+    const seen = new Set();
+    /** @param {DownloadCandidate|null} candidate @returns {Promise<boolean>} */
+    async function tryOne(candidate) {
+      if (!candidate?.url || !isUsableUrl(candidate.url) || seen.has(candidate.url)) return false;
+      seen.add(candidate.url);
+      try {
+        return await attemptCandidate(candidate, request);
+      } catch (exception) {
+        warn(`${candidate.label} failed.`, exception);
+        return false;
+      }
+    }
+    // Resolve an individual candidate lazily so one failed manager call does
+    // not abort subsequent alternatives or the DOM/viewer fallbacks.
+    for (const makeCandidate of candidates) {
+      try {
+        if (await tryOne(await makeCandidate())) return true;
+      } catch (exception) {
+        warn("Telegram manager could not resolve a source.", exception);
+      }
+    }
+    if (!isImage && (await tryOne(dom))) return true;
+    let viewer = null;
+    try {
+      viewer = await viewerCandidate(request, isImage ? photoSize : null);
+      if (viewer && (await tryOne(viewer.candidate))) return true;
+    } catch (exception) {
+      warn("Viewer fallback failed.", exception);
+    } finally {
+      viewer?.cleanup();
+    }
+    if (isImage && (await tryOne(dom))) return true;
+    emitProgress(request, "error");
+    error("No usable source could be downloaded.", {
+      mid: request.mid,
+      pid: request.pid,
+      type: request.type,
+    });
+    return false;
+  }
+
+  /**
+   * Start one request and always release its lock and signal completion.
+   * @param {DownloadRequest} request
+   * @returns {Promise<void>}
+   */
+  async function startDownload(request) {
+    const claim = claimDownload(request);
+    if (!claim) {
+      warn("Download already active for this message.", { mid: request.mid, pid: request.pid });
+      emitDone(request, false);
+      return;
+    }
+    let ok = false;
+    try {
+      ok = await resolveAndDownload(request);
+    } catch (exception) {
+      error("Unexpected download failure.", exception);
+      emitProgress(request, "error");
+    } finally {
+      releaseDownload(claim);
+      emitDone(request, ok);
+    }
+  }
+
+  /**
+   * One MAIN-world request listener. Rejected duplicate requests are
+   * acknowledged immediately, so the content world does not time out.
+   */
+  document.addEventListener("tvd_media_download", (event) => {
+    const envelope = /** @type {CustomEvent} */ (event).detail || {};
+    const requests =
+      envelope.type === "single"
+        ? [envelope.media]
+        : envelope.type === "batch" && Array.isArray(envelope.media)
+          ? envelope.media
+          : [];
+    for (const request of requests) {
+      if (request && typeof request === "object") void startDownload(request);
+    }
+  });
+})();
