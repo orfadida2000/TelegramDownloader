@@ -113,7 +113,7 @@
       const imgElement = container.querySelector("img.media-photo");
       // const videoElement = container.querySelector('.attachment video');
       const paternityCon = container.querySelector(".content-teleram-script");
-      const videoElement = container.querySelector(".media-video");
+      const videoElement = container.querySelector("video.media-video");
       const albumItem = container.querySelectorAll(".album-item");
       const videoTime = container.querySelector(".video-time");
       const source_music = container.getElementsByClassName("audio");
@@ -122,27 +122,23 @@
       if (
         paternityCon === null &&
         albumItem.length === 0 &&
-        imgElement !== null &&
+        (imgElement !== null || videoElement !== null) &&
         source_music.length === 0
       ) {
-        // Video download button
-        if (videoElement !== null && videoTime !== null) {
+        if (videoElement !== null) {
+          // Video download button
           injectDownloadButton(container, "video", createDownloadBtn("video", false), "attachment");
           handleDownload(/** @type {HTMLElement} */ (container), videoElement, "video", conIndx);
-        }
-
-        // Without video link
-        if (videoTime !== null && videoElement === null) {
+        } else if (videoTime !== null) {
+          // Video without a video element
           injectDownloadButton(container, "video", createDownloadBtn("video", false), "attachment");
           container.querySelector(".down_btn_video")?.addEventListener("click", async (event) => {
             event.preventDefault();
             event.stopPropagation();
             await mediaDownload(conIndx + 1, container);
           });
-        }
-
-        // Image download button
-        if (videoTime === null && videoElement === null) {
+        } else {
+          // Image download button
           injectDownloadButton(container, "img", createDownloadBtn("image", false), "attachment");
           handleDownload(/** @type {HTMLElement} */ (container), imgElement, "img", conIndx);
         }
